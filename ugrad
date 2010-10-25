@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# The path to the "stable" repository
+STABLE_REPO="/opt/undergrad"
+
+# The pattern that unstable/user repository names get passed through where \1 is
+# expanded to the name of the repository.
+UNSTABLE_PATH="/home/\1/ugrad"
+
+# The user's config file
+USER_CONFIG="$HOME/.ugrad"
+
+
+# Option names for the config file
+CONFIG_OPTION_REPOSITORY="repo"
+
+
+################################################################################
+
+
+function error {
+	# Display an error. TODO: Make this nicer-looking
+	echo "ugrad: $@" 1>&2
+}
+
+
+function fatal {
+	# Display an error and exit with the given code.
+	err_code="$1"
+	shift
+	error "$@"
+	exit "$err_code"
+}
+
+
+function strip_config_comments {
+	# Strip comments out of a config file
+	sed -re "s/^([^#]*)(#.*)?$/\1/"
+}
+
+
+function get_config_option {
+	# Return only the lines from a config matching a particular option (and remove
+	# the option specifier).
+	sed -nre "s/^\s*$1\s*:\s*(.*)$/\1/p"
+}
+
+
+function repo_name_to_path {
+	# Convert repository names into their paths using the UNSTABLE_PATH variable
+	# as a pattern for repository names which aren't already paths.
+	sed -re "s|^([^/].*)$|$UNSTABLE_PATH|" | sed -re "s/^(.*[^/])\/$/\1/"
+}
+
+
+function list_repos {
+	# Returns a list of repositories the user is subscribed to.
+	(
+		echo "$STABLE_REPO"
+		cat "$USER_CONFIG" \
+			| strip_config_comments \
+			| get_config_option "$CONFIG_OPTION_REPOSITORY"
+	) | sort | uniq
+}
+
+
+function add_config_option {
+	# Updates the user's config file, doesn't process std in
+	option="$1"
+	shift 1
+	value="$@"
+	
+	echo "$option:$value" >> "$USER_CONFIG"
+}
+
+
+function remove_config_option {
+	# Updates the user's config file, doesn't process std in
+	option="$1"
+	shift 1
+	value="$@"
+	
+	# This is a hack as -i on sed is buggy when dealing with bracketed regex
+	# sections
+	x="$(sed -re "s|^(\s*)$option\s*:\s*$value\s*(#.*)?$|\1\2|" < "$USER_CONFIG")"
+	echo -n "$x" > "$USER_CONFIG"
+	
+	return $?
+}
+
+
+################################################################################
+
+function ugrad_help {
+	(
+		echo "ugrad -- The /opt/undergrad Package Manager"
+		echo "TODO: Docs"
+		echo "ugrad show [package]"
+		echo "  Show the information known about the specified package."
+		echo "ugrad repos [add|remove|list|paths]"
+		echo "  List or modify the repositories you are subscribed to."
+	) 1>&2
+}
+
+
+function ugrad_repo {
+	# List/Modify avalable repositories
+	# add [repo name] -- Add a repo
+	# remove [repo name] -- Remove a repo
+	# [nothing] -- List repos
+	command="$1"
+	repo_name="$2"
+	shift 3
+	
+	case "$command" in
+		add)
+			if list_repos | grep -q "$repo_name"; then
+				fatal 1 "Repository '$repo_name' already added!"
+			elif [ ! -d "`echo "$repo_name" | repo_name_to_path`" ]; then
+				fatal 2 "A repository could not be found in" \
+				        "`echo "$repo_name" | repo_name_to_path`"
+			else
+				add_config_option "$CONFIG_OPTION_REPOSITORY" "$repo_name"
+			fi
+			;;
+		remove)
+			if list_repos | grep -q "$repo_name"; then
+				if ! remove_config_option "$CONFIG_OPTION_REPOSITORY" "$repo_name"; then
+					fatal 3 "Could not remove repo, error editing $USER_CONFIG."
+				fi
+			else
+				fatal 4 "Cannot remove unsubscribed repository '$repo_name'."
+			fi
+			;;
+		"paths")
+			list_repos | repo_name_to_path;;
+		"list")
+			list_repos ;;
+		*)
+			fatal -1 "Unrecognised command '$command'."
+	esac
+}
+
+
+function ugrad_show {
+	echo todo
+}
+
+################################################################################
+
+
+command="$1"
+shift 1
+
+case "$command" in
+	repo) ugrad_repo "$@";;
+	show) ugrad_show "$@";;
+	*)    ugrad_help;;
+esac
