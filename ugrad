@@ -3,6 +3,9 @@
 # The path to the "stable" repository
 STABLE_REPO="/opt/undergrad"
 
+# A file listing trusted repositories
+TRUSTED_REPOS="$STABLE_REPO/trusted-repos"
+
 # The pattern that unstable/user repository names get passed through where \1 is
 # expanded to the name of the repository.
 UNSTABLE_PATH="/home/\1/ugrad"
@@ -11,9 +14,22 @@ UNSTABLE_PATH="/home/\1/ugrad"
 USER_CONFIG="$HOME/.ugrad"
 
 
+
 # Option names for the config file
 CONFIG_OPTION_REPOSITORY="repo"
 
+
+# Repository meta-info filename
+REPO_README="repo-readme"
+
+# Repository package index file
+REPO_INDEX="repo-index"
+
+# Package meta-info filename
+PACKAGE_README="README"
+
+# Package environment setup script
+PACKAGE_ENV_SETUP="env-setup"
 
 ################################################################################
 
@@ -42,7 +58,32 @@ function strip_config_comments {
 function get_config_option {
 	# Return only the lines from a config matching a particular option (and remove
 	# the option specifier).
-	sed -nre "s/^\s*$1\s*:\s*(.*)$/\1/p"
+	sed -nre "s/^\s*$1\s*=\s*(.*)$/\1/p"
+}
+
+
+function add_config_option {
+	# Updates the user's config file, doesn't process std in
+	option="$1"
+	shift 1
+	value="$@"
+	
+	echo "$option=$value" >> "$USER_CONFIG"
+}
+
+
+function remove_config_option {
+	# Updates the user's config file, doesn't process std in
+	option="$1"
+	shift 1
+	value="$@"
+	
+	# This is a hack as -i on sed is buggy when dealing with bracketed regex
+	# sections
+	x="$(sed -re "s|^(\s*)$option\s*=\s*$value\s*(#.*)?$|\1\2|" < "$USER_CONFIG")"
+	echo -n "$x" > "$USER_CONFIG"
+	
+	return $?
 }
 
 
@@ -64,28 +105,14 @@ function list_repos {
 }
 
 
-function add_config_option {
-	# Updates the user's config file, doesn't process std in
-	option="$1"
-	shift 1
-	value="$@"
-	
-	echo "$option:$value" >> "$USER_CONFIG"
-}
-
-
-function remove_config_option {
-	# Updates the user's config file, doesn't process std in
-	option="$1"
-	shift 1
-	value="$@"
-	
-	# This is a hack as -i on sed is buggy when dealing with bracketed regex
-	# sections
-	x="$(sed -re "s|^(\s*)$option\s*:\s*$value\s*(#.*)?$|\1\2|" < "$USER_CONFIG")"
-	echo -n "$x" > "$USER_CONFIG"
-	
-	return $?
+function list_installed_packages {
+	# Returns a list of packages the user has installed, or rather, all lines in
+	# the config file that aren't settings
+	(
+		cat "$USER_CONFIG" \
+			| strip_config_comments \
+			| sed -nre "s/^\s*(([^ \t\n=:]+:|)[^ \t\n=]+)\s*$/\1/p"
+	) | sort | uniq
 }
 
 
@@ -98,6 +125,34 @@ function highlight_docstring {
 	RESET=`echo -en "\e[0m"`
 	
 	sed -re "s/\`(([^\[\`]+)([^\`]*)|)\`/${COMMAND}\2${ARGS}\3${RESET}/g"
+}
+
+
+function package_to_repo {
+	# Converts a package name into the repository it is from
+	sed -re "s/^((\w+):|)(.*)$/\2/
+	         s|^$|$STABLE_REPO|"
+}
+
+
+function package_to_name {
+	# Converts a package name into just the name
+	sed -re "s/^(\w+:|)(.*)$/\2/"
+}
+
+
+function package_to_path {
+	# Convert a package name into the full path to the package's files
+	while read arg; do
+		echo "$(echo "$arg" \
+		        | package_to_repo \
+		        | repo_name_to_path)/$(echo "$arg" | package_to_name)"
+	done
+}
+
+
+function get_repo_index {
+	repo_name_to_path | sed -re "s|^.*$|&/$REPO_INDEX|" | xargs cat
 }
 
 
@@ -126,6 +181,10 @@ function ugrad_help {
 	#DOC#
 	# help [command]
 	#   Lookup documentation for ugrad commands or list all available commands.
+	#
+	# Yo dawg,
+	#   I put some help in your help so you can get help while you're
+	#   getting help.
 	#ENDDOC#
 	
 	(
@@ -164,12 +223,59 @@ function ugrad_help {
 }
 
 
+function ugrad_repo_show {
+	# Show information about a repository
+	# See ugrad_repo for usage
+	
+	if [ -z "$1" ]; then
+		repo_name="$STABLE_REPO"
+	else
+		repo_name="$1"
+	fi
+	
+	if ! cd "`echo "$repo_name" | repo_name_to_path 2> /dev/null`"; then
+		fatal 1 "Couldn't  enter the repository!"
+	elif [ ! -r "$REPO_INDEX" ]; then
+		fatal 2 "The repository '$repo_name' could not be found or was not readable."
+	fi
+	
+	# Find out how many packages are available in this repository
+	num_avail="$(echo "$repo_name" | get_repo_index | wc -l)"
+	
+	# Cound how many packages the user has installed from this repository
+	num_installed="$(list_installed_packages \
+	                 | package_to_repo \
+	                 | repo_name_to_path \
+	                 | grep -c "`pwd`")"
+	
+	GREEN="\e[1;32m"
+	RED="\e[1;31m"
+	RESET="\e[0m"
+	
+	echo    "Repository:         $repo_name"
+	echo    "Location:           `pwd`"
+	echo -n "Trusted:            "
+		grep -q "`pwd`" "$TRUSTED_REPOS" && echo -e "${GREEN}Yes" || echo -e "${RED}No"
+		echo -ne "$RESET"
+	echo -n "Subscription:       "
+		list_repos | grep -q "$repo_name" && echo "Subscribed" || echo "Not Subscribed"
+	echo    "Available Packages: $num_avail"
+	echo    "Installed Packages: $num_installed"
+	echo    "Last updated:       `stat "$REPO_INDEX" -c "%y"`"
+	echo
+	cat "$REPO_README"
+}
+
+
 function ugrad_repo {
 	#DOC#
 	# repo [command]
 	#   List/Modify the selection of repositories you want ugrad to search.
 	#
 	# `Usage:`
+	# repo show [repo name]
+	#   Show information about the specified repository or if no repository
+	#   supplied, the $STABLE_REPO repository.
 	# repo list
 	#   List the repositories you are subscribed to.
 	# repo paths
@@ -183,7 +289,7 @@ function ugrad_repo {
 	#ENDDOC#
 	command="$1"
 	repo_name="$2"
-	shift 3
+	shift 2
 	
 	case "$command" in
 		add)
@@ -211,6 +317,8 @@ function ugrad_repo {
 			echo "$repo_name" | repo_name_to_path;;
 		"list")
 			list_repos ;;
+		"show")
+			ugrad_repo_show "$repo_name" ;;
 		"")
 			fatal -1 "Repo takes at least one argument. See 'ugrad help repo'.";;
 		*)
@@ -220,8 +328,107 @@ function ugrad_repo {
 
 
 function ugrad_show {
-	echo todo
+	#DOC#
+	# show [package name]
+	#   Show all known details about a specified package.
+	#ENDDOC#
+	
+	echo "$1" | package_to_path
 }
+
+
+################################################################################
+
+
+function get_current_repo_path {
+	# Returns the path of the repo the shell is currently in
+	while [ ! -e "$REPO_README" ]; do
+		if ! cd .. 2>&1 > /dev/null; then
+			return "$?"
+		fi
+		if [ "`pwd`" == "/" ]; then
+			return 1
+		fi
+	done
+	
+	pwd
+}
+
+
+function generate_package_index {
+	# Create a package index for the current repository
+	# Package indexes consist of 
+	
+	for package in $(find . -name "$PACKAGE_ENV_SETUP" \
+	               | sed -re "s|^[.]/(.*)/$PACKAGE_ENV_SETUP$|\1|"); do
+		if [ -e "$package/$PACKAGE_README" ]; then
+			# Extract the top line of the readme to add to the index
+			readme="`cat "$package/$PACKAGE_README" | head -n 1`"
+		else
+			readme=""
+		fi
+		echo "source $package $readme"
+	done
+}
+
+
+################################################################################
+
+
+function ugrad_admin_init {
+	# See ugrad_admin docs for usage
+	# Initialise the current directory as a repository
+	
+	# Set the readme
+	echo "No information provided." > "$REPO_README"
+	
+	# Set global-read permissions on the directory
+	chmod a+r -R .
+	
+	echo "Repository created! Don't forget to edit the $REPO_README file."
+}
+
+
+function ugrad_admin_update {
+	# See ugrad_admin docs for usage
+	# Update the packge repository and permissions.
+	if repo_path="`get_current_repo_path`"; then
+		cd "$repo_path"
+	else
+		fatal 1 "Couldn't find a ugrad repository here!"
+	fi
+	
+	# Generate a package-index for the repo
+	generate_package_index > "$REPO_INDEX"
+	
+	# Set global-read permissions on the directory
+	chmod a+r -R .
+}
+
+
+function ugrad_admin {
+	#DOC#
+	# admin [command]
+	#   Administration tools for creating/configuring ugrad repositories.
+	#
+	# admin init
+	#   Initialise the current directory as a ugrad repository. This creates an
+	#   empty readme and makes the directory world-readable.
+	# admin update
+	#   Update the current repository's index and set permissions for all files.
+	#ENDDOC#
+	
+	command="$1"
+	shift
+	
+	case "$command" in
+		init) ugrad_admin_init "$@";;
+		update) ugrad_admin_update "$@";;
+		"") fatal 1 "You must give a command, try 'ugrad help admin' for instructions.";;
+		*) fatal 2 "Admin command '$command' not recognised.";;
+	esac
+}
+
 
 ################################################################################
 
@@ -230,9 +437,10 @@ command="$1"
 shift 1
 
 case "$command" in
-	repo) ugrad_repo "$@";;
-	show) ugrad_show "$@";;
 	help) ugrad_help "$@";;
+	show) ugrad_show "$@";;
+	repo) ugrad_repo "$@";;
+	admin) ugrad_admin "$@";;
 	"") fatal 1 "You must give a command, try 'ugrad help' for instructions.";;
 	*) fatal 2 "Command '$command' not recognised.";;
 esac
