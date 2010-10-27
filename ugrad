@@ -89,25 +89,98 @@ function remove_config_option {
 }
 
 
+function highlight_docstring {
+	# Add highlighting to a docstring
+	# Commands enclosed in backticks will be highlighted
+	
+	COMMAND=`echo -en "\e[1m"`
+	ARGS=`echo -en "\e[0;32m"`
+	RESET=`echo -en "\e[0m"`
+	
+	sed -re "s/\`(([^\[\`]+)([^\`]*)|)\`/${COMMAND}\2${ARGS}\3${RESET}/g"
+}
+
+
 ################################################################################
 
 function ugrad_help {
+	# A documentation system which generates (fetches) documentation from comments
+	# left in this source file. The format for this documentation is as follows:
+	#
+	# Documentation begins with
+	#   #DOC#
+	# And ends with
+	#   #ENDDOC#
+	# The first paragraph must be a brief description of the function starting
+	# with an unindented line showing the syntax for the command and then followed
+	# by indented lines summarising the command. For example:
+	#  # mycommand [some args]
+	#  #   A brief description of the command.
+	#
+	# The main documentation for a command should follow the summary after a
+	# single empty line.
+	#
+	# In the main command description unindented lines will be highlighted as
+	# commands unless enclosed with backticks.
+	
+	#DOC#
+	# help [command]
+	#   Lookup documentation for ugrad commands or list all available commands.
+	#ENDDOC#
+	
 	(
-		echo "ugrad -- The /opt/undergrad Package Manager"
-		echo "TODO: Docs"
-		echo "ugrad show [package]"
-		echo "  Show the information known about the specified package."
-		echo "ugrad repos [add|remove|list|paths]"
-		echo "  List or modify the repositories you are subscribed to."
-	) 1>&2
+		if [ -z "$1" ]; then
+			echo "ugrad -- The /opt/undergrad Package Manager"
+			echo
+			echo "Usage: \`ugrad [command]\`"
+			echo
+			echo "Available Commands:"
+			
+			# Generate documentation which lists all available commands and a brief
+			# introduction.
+			
+			sed -nre "/^\s*#DOC#\s*$/,/^\s*(#|#ENDDOC#)\s*$/ {
+			            /^\s*(#DOC#|#|#ENDDOC#)\s*$/ ! {
+			              s/^\s*#\s?//
+			              s/^[^ \t]+.*$/\`&\`/
+			              s/.*/  &/
+			              p
+			            }
+			          }" "$0"
+		else
+			# Generate documentation for a given command name
+			
+			sed -nre "/^\s*#DOC#\s*$/,/^\s*#ENDDOC#\s*$/ {
+			              /^\s*#\s*$1\s+.*$/,/^\s*#ENDDOC#\s*$/ {
+			              /^\s*(#DOC#|#ENDDOC#)\s*$/ ! {
+			                s/^\s*#\s?//
+			                s/^[^ \t]+.*$/\`&\`/
+			                p
+			              }
+			            }
+			          }" "$0"
+		fi;
+	) | highlight_docstring 1>&2
 }
 
 
 function ugrad_repo {
-	# List/Modify avalable repositories
-	# add [repo name] -- Add a repo
-	# remove [repo name] -- Remove a repo
-	# [nothing] -- List repos
+	#DOC#
+	# repo [command]
+	#   List/Modify the selection of repositories you want ugrad to search.
+	#
+	# `Usage:`
+	# repo list
+	#   List the repositories you are subscribed to.
+	# repo paths
+	#   List the paths of the repositories you are subscribed to.
+	# repo path [path]
+	#   List the path of the specified repository.
+	# repo add [repo name]
+	#   Add a repo
+	# repo remove [repo name]
+	#   Remove a repo
+	#ENDDOC#
 	command="$1"
 	repo_name="$2"
 	shift 3
@@ -134,10 +207,14 @@ function ugrad_repo {
 			;;
 		"paths")
 			list_repos | repo_name_to_path;;
+		"path")
+			echo "$repo_name" | repo_name_to_path;;
 		"list")
 			list_repos ;;
+		"")
+			fatal -1 "Repo takes at least one argument. See 'ugrad help repo'.";;
 		*)
-			fatal -1 "Unrecognised command '$command'."
+			fatal -1 "Unrecognised command '$command'. See 'ugrad help repo'.";;
 	esac
 }
 
@@ -155,5 +232,7 @@ shift 1
 case "$command" in
 	repo) ugrad_repo "$@";;
 	show) ugrad_show "$@";;
-	*)    ugrad_help;;
+	help) ugrad_help "$@";;
+	"") fatal 1 "You must give a command, try 'ugrad help' for instructions.";;
+	*) fatal 2 "Command '$command' not recognised.";;
 esac
